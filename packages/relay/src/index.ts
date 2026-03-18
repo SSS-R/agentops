@@ -6,22 +6,27 @@
 import express, { Request, Response } from 'express';
 import Database from 'better-sqlite3';
 import { Connection, Worker } from '@temporalio';
+import { createAgentRoutes } from './routes/agents';
+import { createApprovalRoutes } from './routes/approvals';
+import { createNotificationRoutes } from './routes/notifications';
+import { getVapidKeys } from './utils/vapidKeys';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Get VAPID keys for Web Push
+const vapidKeys = getVapidKeys();
+
+// Middleware
+app.use(express.json());
+app.use((req: Request, res: Response, next: Function) => {
+  // Log all requests to audit trail
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  next();
+});
+
 // SQLite Database
 const db = new Database('./relay.db');
-
-// Initialize database tables
-db.exec(`
-  CREATE TABLE IF NOT EXISTS agents (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    status TEXT DEFAULT 'inactive',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`);
 
 // Temporal.io connection
 let temporalWorker: Worker | null = null;
@@ -48,20 +53,21 @@ async function initializeTemporal() {
 
 // Routes
 app.get('/health', (req: Request, res: Response) => {
-  res.json({ status: 'ok', temporal: temporalWorker ? 'connected' : 'disconnected' });
+  res.json({ 
+    status: 'ok', 
+    temporal: temporalWorker ? 'connected' : 'disconnected',
+    agents: db.prepare('SELECT COUNT(*) as count FROM agents').get()
+  });
 });
 
-app.get('/agents', (req: Request, res: Response) => {
-  const agents = db.prepare('SELECT * FROM agents').all();
-  res.json(agents);
-});
+// Agent Registry API
+app.use('/agents', createAgentRoutes(db));
 
-app.post('/agents', (req: Request, res: Response) => {
-  const { name } = req.body;
-  const stmt = db.prepare('INSERT INTO agents (name) VALUES (?)');
-  const result = stmt.run(name);
-  res.json({ id: result.lastInsertRowid, name });
-});
+// Approval Queue API
+app.use('/approvals', createApprovalRoutes(db));
+
+// Push Notifications API
+app.use('/notifications', createNotificationRoutes(db, vapidKeys));
 
 // Start server
 async function start() {
@@ -69,6 +75,11 @@ async function start() {
   
   app.listen(PORT, () => {
     console.log(`Relay server running on http://localhost:${PORT}`);
+    console.log(`Health check: http://localhost:${PORT}/health`);
+    console.log(`Agent API: http://localhost:${PORT}/agents`);
+    console.log(`Approval API: http://localhost:${PORT}/approvals`);
+    console.log(`Notifications API: http://localhost:${PORT}/notifications`);
+    console.log(`VAPID Public Key: ${vapidKeys.publicKey}`);
   });
 }
 

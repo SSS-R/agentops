@@ -1,0 +1,257 @@
+/**
+ * Approval Queue API Routes
+ * 
+ * Endpoints:
+ * - POST /approvals — Request approval for an action
+ * - GET /approvals/pending — List pending approvals
+ * - GET /approvals — List all approvals
+ * - PATCH /approvals/:id — Approve or reject an approval
+ */
+
+import { Request, Response } from 'express';
+import Database from 'better-sqlite3';
+import { sendPushNotification } from './notifications';
+import { getVapidKeys } from '../utils/vapidKeys';
+
+export function createApprovalRoutes(db: Database) {
+  const vapidKeys = getVapidKeys();
+  const router = require('express').Router();
+
+  // Initialize approvals table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approvals (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      action_type TEXT NOT NULL,
+      action_details TEXT,
+      risk_level TEXT DEFAULT 'medium',
+      risk_reason TEXT,
+      status TEXT DEFAULT 'pending',
+      decision TEXT,
+      decision_reason TEXT,
+      requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      decided_at DATETIME,
+      FOREIGN KEY (agent_id) REFERENCES agents(id)
+    )
+  `);
+
+  // Initialize audit_logs table (append-only)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_type TEXT NOT NULL,
+      event_details TEXT,
+      agent_id TEXT,
+      approval_id TEXT,
+      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  /**
+   * POST /approvals
+   * Request approval for an action (agent-initiated)
+   */
+  router.post('/', (req: Request, res: Response) => {
+    try {
+      const { id, agent_id, action_type, action_details, risk_level, risk_reason } = req.body;
+
+      if (!id || !agent_id || !action_type) {
+        return res.status(400).json({ error: 'id, agent_id, and action_type are required' });
+      }
+
+      // Insert approval request
+      const stmt = db.prepare(`
+        INSERT INTO approvals (id, agent_id, action_type, action_details, risk_level, risk_reason, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending')
+      `);
+
+      stmt.run(id, agent_id, action_type, JSON.stringify(action_details || {}), risk_level, risk_reason);
+
+      // Log to audit trail
+      const auditStmt = db.prepare(`
+        INSERT INTO audit_logs (event_type, event_details, agent_id, approval_id)
+        VALUES ('approval_requested', ?, ?, ?)
+      `);
+      auditStmt.run(JSON.stringify({ action_type, action_details }), agent_id, id);
+
+      res.status(201).json({
+        id,
+        agent_id,
+        action_type,
+        action_details: action_details || {},
+        risk_level: risk_level || 'medium',
+        risk_reason: risk_reason || null,
+        status: 'pending',
+        message: 'Approval request created'
+      });
+    } catch (error: any) {
+      console.error('Create approval error:', error);
+      res.status(500).json({ error: 'Failed to create approval request' });
+    }
+  });
+
+  /**
+   * GET /approvals/pending
+   * List all pending approvals
+   */
+  router.get('/pending', (req: Request, res: Response) => {
+    try {
+      const stmt = db.prepare(`
+        SELECT * FROM approvals 
+        WHERE status = 'pending' 
+        ORDER BY requested_at ASC
+      `);
+      const approvals = stmt.all().map((approval: any) => ({
+        ...approval,
+        action_details: JSON.parse(approval.action_details || '{}')
+      }));
+
+      res.json(approvals);
+    } catch (error: any) {
+      console.error('List pending approvals error:', error);
+      res.status(500).json({ error: 'Failed to list pending approvals' });
+    }
+  });
+
+  /**
+   * GET /approvals
+   * List all approvals (with optional status filter)
+   */
+  router.get('/', (req: Request, res: Response) => {
+    try {
+      const { status } = req.query;
+      let query = 'SELECT * FROM approvals';
+      let params: any[] = [];
+
+      if (status) {
+        query += ' WHERE status = ?';
+        params.push(status);
+      }
+
+      query += ' ORDER BY requested_at DESC';
+
+      const stmt = db.prepare(query);
+      const approvals = stmt.all(...params).map((approval: any) => ({
+        ...approval,
+        action_details: JSON.parse(approval.action_details || '{}')
+      }));
+
+      res.json(approvals);
+    } catch (error: any) {
+      console.error('List approvals error:', error);
+      res.status(500).json({ error: 'Failed to list approvals' });
+    }
+  });
+
+  /**
+   * GET /approvals/:id
+   * Get a specific approval
+   */
+  router.get('/:id', (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const stmt = db.prepare('SELECT * FROM approvals WHERE id = ?');
+      const approval = stmt.get(id) as any;
+
+      if (!approval) {
+        return res.status(404).json({ error: 'Approval not found' });
+      }
+
+      res.json({
+        ...approval,
+        action_details: JSON.parse(approval.action_details || '{}')
+      });
+    } catch (error: any) {
+      console.error('Get approval error:', error);
+      res.status(500).json({ error: 'Failed to get approval' });
+    }
+  });
+
+  /**
+   * PATCH /approvals/:id
+   * Approve or reject an approval (human decision)
+   */
+  router.patch('/:id', (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { decision, decision_reason } = req.body;
+
+      if (!decision || !['approved', 'rejected'].includes(decision)) {
+        return res.status(400).json({ error: 'decision must be "approved" or "rejected"' });
+      }
+
+      // Update approval status
+      const stmt = db.prepare(`
+        UPDATE approvals 
+        SET status = ?, decision = ?, decision_reason = ?, decided_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND status = 'pending'
+      `);
+
+      const result = stmt.run(decision === 'approved' ? 'approved' : 'rejected', decision, decision_reason, id);
+
+      if (result.changes === 0) {
+        return res.status(404).json({ error: 'Approval not found or already decided' });
+      }
+
+      // Log to audit trail
+      const auditStmt = db.prepare(`
+        INSERT INTO audit_logs (event_type, event_details, approval_id)
+        VALUES ('approval_decided', ?, ?)
+      `);
+      auditStmt.run(JSON.stringify({ decision, decision_reason }), id);
+
+      res.json({
+        id,
+        status: decision === 'approved' ? 'approved' : 'rejected',
+        decision,
+        decision_reason,
+        message: `Approval ${decision}`
+      });
+    } catch (error: any) {
+      console.error('Decide approval error:', error);
+      res.status(500).json({ error: 'Failed to decide approval' });
+    }
+  });
+
+  /**
+   * GET /audit-logs
+   * List audit logs (append-only log of all actions)
+   */
+  router.get('/audit-logs', (req: Request, res: Response) => {
+    try {
+      const { limit = 100 } = req.query;
+      const stmt = db.prepare(`
+        SELECT * FROM audit_logs 
+        ORDER BY timestamp DESC 
+        LIMIT ?
+      `);
+      const logs = stmt.all(Number(limit)).map((log: any) => ({
+        ...log,
+        event_details: JSON.parse(log.event_details || '{}')
+      }));
+
+      res.json(logs);
+    } catch (error: any) {
+      console.error('List audit logs error:', error);
+      res.status(500).json({ error: 'Failed to list audit logs' });
+    }
+  });
+
+  return router;
+}
+ LIMIT ?
+      `);
+      const logs = stmt.all(Number(limit)).map((log: any) => ({
+        ...log,
+        event_details: JSON.parse(log.event_details || '{}')
+      }));
+
+      res.json(logs);
+    } catch (error: any) {
+      console.error('List audit logs error:', error);
+      res.status(500).json({ error: 'Failed to list audit logs' });
+    }
+  });
+
+  return router;
+}
