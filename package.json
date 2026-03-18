@@ -1,0 +1,44 @@
+{
+  "name": "agentops-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The control plane for AI coding agents",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "install:all": "npm install",
+    "build": "npm run build --workspaces",
+    "build:relay": "npm run build --workspace=@agentops/relay",
+    "build:ui": "npm run build --workspace=@agentops/ui",
+    "dev": "npm run dev --workspaces --if-present",
+    "dev:relay": "npm run dev --workspace=@agentops/relay",
+    "dev:ui": "npm run dev --workspace=@agentops/ui",
+    "test": "npm run test --workspaces --if-present",
+    "test:relay": "npm run test --workspace=@agentops/relay",
+    "test:ui": "npm run test --workspace=@agentops/ui",
+    "lint": "npm run lint --workspaces --if-present",
+    "clean": "rm -rf packages/*/dist packages/*/node_modules node_modules"
+  },
+  "keywords": [
+    "ai-agents",
+    "agent-orchestration",
+    "temporal",
+    "mcp",
+    "developer-tools"
+  ],
+  "author": "AgentOps Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SSS-R/agentops.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SSS-R/agentops/issues"
+  },
+  "homepage": "https://github.com/SSS-R/agentops#readme"
+}

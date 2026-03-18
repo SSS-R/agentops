@@ -1,3 +1,7 @@
+# ===========================
+# Root Level
+# ===========================
+
 # Dependencies
 node_modules/
 .pnp
@@ -62,3 +66,33 @@ coverage/
 # Temporary files
 tmp/
 temp/
+
+# ===========================
+# Workspace Packages
+# ===========================
+
+# Relay Server (packages/relay)
+packages/relay/node_modules/
+packages/relay/dist/
+packages/relay/*.db
+packages/relay/*.sqlite
+
+# UI PWA (packages/ui)
+packages/ui/node_modules/
+packages/ui/dist/
+packages/ui/build/
+
+# SDK (packages/sdk)
+packages/sdk/node_modules/
+packages/sdk/dist/
+
+# Shared (packages/shared)
+packages/shared/node_modules/
+packages/shared/dist/
+
+# ===========================
+# Monorepo
+# ===========================
+
+# Root node_modules (for workspaces)
+node_modules/
